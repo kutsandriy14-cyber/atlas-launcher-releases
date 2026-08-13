@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QAbstractButton>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -9,6 +10,7 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -188,7 +190,12 @@ bool launchTemporaryUpdater(const QString &archivePath, const QString &installDi
         if (error) *error = QStringLiteral("Не удалось запустить отдельный процесс установки.");
         return false;
     }
+
+    // Отдельный updater уже запущен из временной папки и ждёт PID Atlas Launcher.
+    // Закрываем основное приложение через его цикл событий: WM_CLOSE может быть
+    // перехвачен оконным менеджером Windows или не дойти до окна при модальном диалоге.
     requestLauncherClose(targetPid);
+    QTimer::singleShot(0, []() { QCoreApplication::quit(); });
     return true;
 }
 
@@ -265,6 +272,37 @@ int checkForUpdate(QApplication &application, const QStringList &arguments)
         QAbstractButton *ignore = prompt.addButton(QStringLiteral("Игнорировать эту версию"), QMessageBox::DestructiveRole);
         prompt.exec();
         if (prompt.clickedButton() == update) {
+            auto *progress = new QProgressDialog(nullptr);
+            progress->setWindowTitle(QStringLiteral("Atlas Updater"));
+            progress->setLabelText(QStringLiteral("Скачивается обновление %1…").arg(release.version));
+            progress->setCancelButton(nullptr);
+            progress->setWindowModality(Qt::ApplicationModal);
+            progress->setMinimumDuration(0);
+            progress->setRange(0, 0);
+            progress->show();
+
+            QObject::connect(&service, &atlas::UpdateService::updateDownloadProgress, &application,
+                             [progress](qint64 received, qint64 total) {
+                if (!progress) return;
+                if (total > 0) {
+                    progress->setRange(0, 1000);
+                    progress->setValue(int((received * 1000) / total));
+                    progress->setLabelText(QStringLiteral("Скачивается обновление: %1 из %2 МБ")
+                                           .arg(QString::number(received / (1024.0 * 1024.0), 'f', 1))
+                                           .arg(QString::number(total / (1024.0 * 1024.0), 'f', 1)));
+                }
+            });
+            QObject::connect(&service, &atlas::UpdateService::updateDownloadError, &application,
+                             [progress](const QString &) {
+                if (progress) progress->close();
+            });
+            QObject::connect(&service, &atlas::UpdateService::updateReadyToInstall, &application,
+                             [progress](const QString &, const atlas::UpdateRelease &) {
+                if (!progress) return;
+                progress->setRange(0, 0);
+                progress->setLabelText(QStringLiteral("Проверка завершена. Запускается установка…"));
+            });
+
             const QString updatesDirectory = QDir(settingsDirectory).filePath(QStringLiteral("updates"));
             service.downloadUpdate(release, updatesDirectory);
         } else if (prompt.clickedButton() == ignore) {

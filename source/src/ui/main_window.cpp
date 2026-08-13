@@ -2779,7 +2779,7 @@ void MainWindow::requestCatalogIcon(const QString &iconUrl)
 
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8");
-    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.0 (catalog thumbnails)");
+    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.1 (catalog thumbnails)");
     auto *reply = m_catalogIconNetwork->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, iconUrl]() {
         const QByteArray data = reply->readAll();

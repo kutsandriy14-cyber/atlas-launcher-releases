@@ -5,7 +5,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${1:-0.3.0}"
+version="${1:-0.3.1}"
 dist_dir="$repo_root/dist"
 portable_dir="$dist_dir/AtlasLauncher-win64"
 staging_root="$dist_dir/.AtlasLauncher-win64-staging"

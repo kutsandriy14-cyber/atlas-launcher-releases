@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(AtlasLauncher
-    VERSION 0.3.0
+    VERSION 0.3.1
     DESCRIPTION "Atlas Launcher - Minecraft Java launcher for Windows 7+"
     LANGUAGES CXX
 )

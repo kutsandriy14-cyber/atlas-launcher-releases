@@ -25,7 +25,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(QStringLiteral("Atlas"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("atlas-launcher.local"));
     QCoreApplication::setApplicationName(QStringLiteral("Atlas Launcher"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.3.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.3.1"));
 
     const QString roamingAppData = qEnvironmentVariable("APPDATA");
     const QString dataDirectory = roamingAppData.isEmpty()

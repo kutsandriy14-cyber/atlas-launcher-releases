@@ -70,7 +70,7 @@ jobs:
       - name: Package portable archive and installer
         shell: pwsh
         run: |
-          $version = '0.3.0'
+          $version = '0.3.1'
           $deploy = 'dist\AtlasLauncher-win64'
           $portable = "dist\AtlasLauncher-$version-win64-portable.zip"
           if (Test-Path $portable) { Remove-Item $portable -Force }
@@ -82,15 +82,15 @@ jobs:
           $portableHash = (Get-FileHash -Algorithm SHA256 $portable).Hash.ToLower()
           $setupHash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
           Set-Content -Path 'dist\SHA256SUMS.txt' -Value "$portableHash  $(Split-Path $portable -Leaf)"
-          Add-Content -Path 'dist\SHA256SUMS.txt' -Value "$setupHash  installer/$(Split-Path $setup -Leaf)"
+          Add-Content -Path 'dist\SHA256SUMS.txt' -Value "$setupHash  $(Split-Path $setup -Leaf)"
           Get-Content 'dist\SHA256SUMS.txt'
 
       - name: Upload release files
         uses: actions/upload-artifact@v4
         with:
-          name: atlas-launcher-0.3.0-windows
+          name: atlas-launcher-0.3.1-windows
           if-no-files-found: error
           path: |
-            dist/AtlasLauncher-0.3.0-win64-portable.zip
-            dist/installer/AtlasLauncher-Setup-0.3.0-x64.exe
+            dist/AtlasLauncher-0.3.1-win64-portable.zip
+            dist/installer/AtlasLauncher-Setup-0.3.1-x64.exe
             dist/SHA256SUMS.txt

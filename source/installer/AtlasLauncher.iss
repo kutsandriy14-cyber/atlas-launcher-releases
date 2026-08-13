@@ -4,7 +4,7 @@
 ; содержащую AtlasLauncher.exe и файлы, подготовленные windeployqt.
 
 #define MyAppName "Atlas Launcher"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppPublisher "Atlas"
 #define MyAppExeName "AtlasLauncher.exe"
 
