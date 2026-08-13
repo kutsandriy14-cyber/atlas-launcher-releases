@@ -1,0 +1,96 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Qt 5.15.2 for MinGW 8.1
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_mingw81
+          cache: true
+
+      - name: Set up MinGW and Inno Setup
+        shell: pwsh
+        run: |
+          choco install mingw innosetup --no-progress -y
+          $mingwCandidates = @(
+            'C:\ProgramData\mingw64\mingw64\bin',
+            'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin'
+          )
+          $mingwBin = $mingwCandidates | Where-Object { Test-Path (Join-Path $_ 'g++.exe') } | Select-Object -First 1
+          if (-not $mingwBin) { throw "MinGW compiler was not installed." }
+          $mingwBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $qtPrefix = Split-Path -Parent (Split-Path -Parent $env:Qt5_DIR)
+          cmake -S . -B build-win64 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$qtPrefix"
+          cmake --build build-win64 --config Release --parallel
+          foreach ($binary in @('AtlasLauncher.exe', 'AtlasUpdater.exe', 'TlsRuntimeProbe.exe')) {
+            if (-not (Test-Path "build-win64\$binary")) { throw "Build output missing: $binary" }
+          }
+
+      - name: Restore prior release runtime and deploy Qt
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $seed = Join-Path $env:RUNNER_TEMP 'atlas-0.2.8'
+          New-Item -ItemType Directory -Path $seed | Out-Null
+          gh release download v0.2.8 --repo kutsandriy14-cyber/atlas-launcher-releases --pattern 'AtlasLauncher-0.2.8-win64-portable.zip' --dir $seed
+          Expand-Archive -Path (Join-Path $seed 'AtlasLauncher-0.2.8-win64-portable.zip') -DestinationPath $seed -Force
+          $deploy = 'dist\AtlasLauncher-win64'
+          New-Item -ItemType Directory -Path $deploy -Force | Out-Null
+          Copy-Item -Path (Join-Path $seed 'AtlasLauncher-win64\*') -Destination $deploy -Recurse -Force
+          Copy-Item 'build-win64\AtlasLauncher.exe', 'build-win64\AtlasUpdater.exe', 'build-win64\TlsRuntimeProbe.exe' -Destination $deploy -Force
+          windeployqt --release --no-translations --compiler-runtime "$deploy\AtlasLauncher.exe"
+          windeployqt --release --no-translations --compiler-runtime "$deploy\AtlasUpdater.exe"
+          windeployqt --release --no-translations --compiler-runtime "$deploy\TlsRuntimeProbe.exe"
+          Copy-Item 'build-win64\TlsRuntimeProbe.exe' "$deploy\AtlasTLSProbe.exe" -Force
+          if (Test-Path "$deploy\AtlasTLSProbe.exe") { Remove-Item "$deploy\TlsRuntimeProbe.exe" -Force }
+          foreach ($required in @('AtlasLauncher.exe', 'AtlasUpdater.exe', 'AtlasTLSProbe.exe', 'Qt5Core.dll', 'Qt5Gui.dll', 'Qt5Network.dll', 'Qt5Widgets.dll', 'platforms\qwindows.dll', 'libcrypto-1_1-x64.dll', 'libssl-1_1-x64.dll', 'tools\7za.exe')) {
+            if (-not (Test-Path (Join-Path $deploy $required))) { throw "Portable runtime missing: $required" }
+          }
+
+      - name: Package portable archive and installer
+        shell: pwsh
+        run: |
+          $version = '0.3.0'
+          $deploy = 'dist\AtlasLauncher-win64'
+          $portable = "dist\AtlasLauncher-$version-win64-portable.zip"
+          if (Test-Path $portable) { Remove-Item $portable -Force }
+          Compress-Archive -Path $deploy -DestinationPath $portable -CompressionLevel Optimal
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\AtlasLauncher.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = "dist\installer\AtlasLauncher-Setup-$version-x64.exe"
+          if (-not (Test-Path $setup)) { throw "Installer was not created." }
+          $portableHash = (Get-FileHash -Algorithm SHA256 $portable).Hash.ToLower()
+          $setupHash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
+          Set-Content -Path 'dist\SHA256SUMS.txt' -Value "$portableHash  $(Split-Path $portable -Leaf)"
+          Add-Content -Path 'dist\SHA256SUMS.txt' -Value "$setupHash  installer/$(Split-Path $setup -Leaf)"
+          Get-Content 'dist\SHA256SUMS.txt'
+
+      - name: Upload release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-launcher-0.3.0-windows
+          if-no-files-found: error
+          path: |
+            dist/AtlasLauncher-0.3.0-win64-portable.zip
+            dist/installer/AtlasLauncher-Setup-0.3.0-x64.exe
+            dist/SHA256SUMS.txt

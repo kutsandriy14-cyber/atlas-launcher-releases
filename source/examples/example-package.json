@@ -1,0 +1,30 @@
+{
+  "format": "atlas-launcher-package",
+  "schemaVersion": 1,
+  "name": "Atlas Adventure Example",
+  "version": "1.0.0",
+  "minecraft": "1.20.1",
+  "loader": {
+    "kind": "fabric",
+    "version": "0.15.11"
+  },
+  "files": [
+    {
+      "path": "config/README.txt",
+      "source": "local",
+      "sha512": ""
+    },
+    {
+      "path": "mods/example-mod.jar",
+      "source": "modrinth",
+      "projectId": "example-project",
+      "versionId": "example-version",
+      "sha512": "optional-sha512"
+    }
+  ],
+  "overrides": [
+    "config",
+    "resourcepacks",
+    "shaderpacks"
+  ]
+}

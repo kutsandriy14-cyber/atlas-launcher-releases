@@ -1,0 +1,11 @@
+Atlas Launcher — уведомления о сторонних компонентах
+
+Этот portable-пакет включает динамические библиотеки Qt 5.15.2: Qt5Core.dll, Qt5Gui.dll, Qt5Network.dll, Qt5Widgets.dll и platforms/qwindows.dll. Qt используется на условиях GNU Lesser General Public License version 3 (LGPL-3.0) либо коммерческой лицензии Qt. Сведения о проекте и исходный код доступны на https://www.qt.io/ и https://code.qt.io/.
+
+В состав также входят библиотеки среды MinGW: libgcc_s_seh-1.dll, libstdc++-6.dll и libwinpthread-1.dll.
+
+Для HTTPS Qt 5.15 загружает OpenSSL 1.1.1w x64 динамически. В комплект включены libcrypto-1_1-x64.dll и libssl-1_1-x64.dll, собранные воспроизводимым сценарием из официального исходного архива OpenSSL после SHA-256-проверки. Полный текст лицензии, номер версии и контрольная сумма архива находятся в licenses/OpenSSL-1.1.1w/.
+
+Папка tools содержит 7-Zip Extra: 7za.exe и 7za.dll. Copyright (C) 1999–2023 Igor Pavlov. Файлы 7-Zip Extra распространяются на условиях GNU LGPL; полный текст уведомления включён как tools/7zip-LICENSE.txt.
+
+Исходный код лаунчера, сценарии сборки, исходный скрипт OpenSSL и Inno Setup-скрипт поставляются в отдельном архиве исходников той же версии.

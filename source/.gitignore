@@ -1,0 +1,32 @@
+# Build products and CMake state
+/build/
+/build-win64/
+/.build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+
+# Release staging and generated archives
+/dist/
+/test-output/
+/Downloads/
+
+# Local logs and temporary data
+*.log
+*.tmp
+*.part
+*.bak
+*.user
+*.user.*
+
+# Local tool and workspace state
+/.scaffold-status
+/.workspace-status
+/.manus/
+
+# Downloaded runtime bundles are supplied only in release packages.
+# The minimal 7-Zip runtime needed by Atlas remains versioned in /tools.
+/third_party/7zip/
+/third_party/openssl-win64/bin/
