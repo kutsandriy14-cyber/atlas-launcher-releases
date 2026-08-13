@@ -61,7 +61,13 @@ private:
         QString assetIndexTaskId;
         QString metadataPath;
         QString assetIndexPath;
+        QString assetIndexId;
+        QString legacyAssetsTargetDirectory;
+        QVector<QPair<QString, QString>> legacyAssetMappings;
+        int nextLegacyAssetMapping = 0;
         bool awaitingAssetIndex = false;
+        bool materializingLegacyAssets = false;
+        bool legacyAssetsMaterialized = false;
         bool failed = false;
     };
 
@@ -70,6 +76,7 @@ private:
     void scheduleMetadata(const MinecraftVersionDescriptor &descriptor);
     void scheduleVersionFiles(const QJsonObject &metadata);
     void scheduleAssetObjects();
+    void materializeLegacyAssetsBatch();
     void finishIfComplete();
     bool libraryAllowedOnWindows(const QJsonObject &library) const;
     void enqueueFile(const QString &taskId, const QString &title, const QUrl &url,

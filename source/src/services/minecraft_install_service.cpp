@@ -126,8 +126,10 @@ void MinecraftInstallService::requestManifest(bool includeSnapshots, bool includ
         previousReply->deleteLater();
     }
     QNetworkRequest request{QUrl(QString::fromLatin1(kVersionManifestUrl))};
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.2 (Minecraft installer)"));
-    request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.3.3 (Minecraft installer)"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(60000);
     m_manifestReply = m_network.get(request);
     m_manifestReply->setProperty("includeSnapshots", includeSnapshots);
     m_manifestReply->setProperty("includeOldBeta", includeOldBeta);
@@ -298,6 +300,7 @@ void MinecraftInstallService::scheduleVersionFiles(const QJsonObject &metadata)
         failInstall(QStringLiteral("Mojang metadata не содержит проверяемый asset index."));
         return;
     }
+    m_job.assetIndexId = assetId;
     m_job.assetIndexPath = QDir(gameDirectory()).filePath(QStringLiteral("assets/indexes/%1.json").arg(assetId));
     if (sha1Matches(m_job.assetIndexPath, assetSha1)) {
         m_job.awaitingAssetIndex = false;
@@ -335,10 +338,13 @@ void MinecraftInstallService::scheduleVersionFiles(const QJsonObject &metadata)
             enqueueFile(newTaskId(QStringLiteral("library")), QStringLiteral("Библиотека %1").arg(name),
                         artifactUrl, libraryDestination(artifactPath), artifactSha1,
                         artifact.value(QStringLiteral("size")).toVariant().toLongLong());
-        } else {
+        } else if (downloads.isEmpty()) {
             // Старые JSON и некоторые legacy loader profiles задают только Maven
             // coordinate и базовый URL. Без SHA-1 задача выполняется без ложной
             // проверки, но по-прежнему только через допустимый HTTPS-источник.
+            // Не используем этот fallback для modern native-only libraries:
+            // lwjgl-platform и jinput-platform содержат downloads.classifiers,
+            // но базового JAR у них по официальному Maven URL не существует.
             const QString legacyPath = mavenPath(name);
             const QUrl legacyUrl = legacyMavenUrl(library.value(QStringLiteral("url")).toString(), legacyPath);
             if (!legacyPath.isEmpty() && legacyUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0) {
@@ -381,11 +387,25 @@ void MinecraftInstallService::scheduleAssetObjects()
     }
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    const QJsonObject objects = document.object().value(QStringLiteral("objects")).toObject();
+    const QJsonObject indexRoot = document.object();
+    const QJsonObject objects = indexRoot.value(QStringLiteral("objects")).toObject();
     if (parseError.error != QJsonParseError::NoError || objects.isEmpty()) {
         failInstall(QStringLiteral("Asset index имеет некорректный JSON или не содержит объектов."));
         return;
     }
+    // До 1.6 игра ищет объекты по логическим именам, а не в content-addressed
+    // assets/objects. Mojang помечает такие индексы map_to_resources. Некоторые
+    // промежуточные legacy-индексы используют virtual вместо этого.
+    const bool useVirtualAssets = indexRoot.value(QStringLiteral("virtual")).toBool(false);
+    const bool mapToResources = indexRoot.value(QStringLiteral("map_to_resources")).toBool(false);
+    if (useVirtualAssets || mapToResources) {
+        m_job.legacyAssetsTargetDirectory = useVirtualAssets
+            ? QDir(gameDirectory()).filePath(QStringLiteral("assets/virtual/%1").arg(m_job.assetIndexId))
+            : QDir(m_job.instance.rootPath).filePath(QStringLiteral("resources"));
+    } else {
+        m_job.legacyAssetsMaterialized = true;
+    }
+
     for (auto it = objects.constBegin(); it != objects.constEnd(); ++it) {
         const QJsonObject asset = it.value().toObject();
         const QString hash = asset.value(QStringLiteral("hash")).toString();
@@ -394,14 +414,76 @@ void MinecraftInstallService::scheduleAssetObjects()
         enqueueFile(newTaskId(QStringLiteral("asset")), QStringLiteral("Asset: %1").arg(it.key()),
                     QUrl(url), assetDestination(hash), hash,
                     asset.value(QStringLiteral("size")).toVariant().toLongLong());
+
+        if (!m_job.legacyAssetsTargetDirectory.isEmpty()) {
+            QString logicalPath = it.key();
+            logicalPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            logicalPath = QDir::cleanPath(logicalPath);
+            if (logicalPath.isEmpty() || logicalPath == QStringLiteral(".") || logicalPath == QStringLiteral("..") ||
+                logicalPath.startsWith(QStringLiteral("../")) || QDir::isAbsolutePath(logicalPath)) {
+                failInstall(QStringLiteral("Asset index содержит небезопасный путь: %1").arg(it.key()));
+                return;
+            }
+            m_job.legacyAssetMappings.append(qMakePair(assetDestination(hash),
+                QDir(m_job.legacyAssetsTargetDirectory).filePath(logicalPath)));
+        }
     }
     m_downloadManager->start();
+    finishIfComplete();
+}
+
+void MinecraftInstallService::materializeLegacyAssetsBatch()
+{
+    if (!isInstalling() || m_job.pendingTaskIds.size() > 0 || !m_job.materializingLegacyAssets) return;
+
+    constexpr int kAssetsPerBatch = 48;
+    const int end = qMin(m_job.nextLegacyAssetMapping + kAssetsPerBatch, m_job.legacyAssetMappings.size());
+    for (; m_job.nextLegacyAssetMapping < end; ++m_job.nextLegacyAssetMapping) {
+        const auto &mapping = m_job.legacyAssetMappings.at(m_job.nextLegacyAssetMapping);
+        const QString &sourcePath = mapping.first;
+        const QString &destinationPath = mapping.second;
+        if (!QFileInfo(sourcePath).isFile()) {
+            failInstall(QStringLiteral("Не найден скачанный legacy asset: %1").arg(sourcePath));
+            return;
+        }
+        if (!QDir().mkpath(QFileInfo(destinationPath).dir().absolutePath())) {
+            failInstall(QStringLiteral("Не удалось создать каталог legacy resources: %1")
+                        .arg(QFileInfo(destinationPath).dir().absolutePath()));
+            return;
+        }
+        if (QFileInfo::exists(destinationPath) && !QFile::remove(destinationPath)) {
+            failInstall(QStringLiteral("Не удалось обновить legacy asset: %1").arg(destinationPath));
+            return;
+        }
+        QFile source(sourcePath);
+        if (!source.link(destinationPath) && !QFile::copy(sourcePath, destinationPath)) {
+            failInstall(QStringLiteral("Не удалось подготовить legacy asset: %1").arg(destinationPath));
+            return;
+        }
+    }
+
+    if (m_job.nextLegacyAssetMapping < m_job.legacyAssetMappings.size()) {
+        QTimer::singleShot(0, this, &MinecraftInstallService::materializeLegacyAssetsBatch);
+        return;
+    }
+
+    m_job.legacyAssetsMaterialized = true;
+    m_job.materializingLegacyAssets = false;
+    Logger::info(QStringLiteral("Restored %1 legacy assets for %2")
+                 .arg(m_job.legacyAssetMappings.size()).arg(m_job.descriptor.id));
     finishIfComplete();
 }
 
 void MinecraftInstallService::finishIfComplete()
 {
     if (!isInstalling() || m_job.awaitingAssetIndex || !m_job.pendingTaskIds.isEmpty()) return;
+    if (!m_job.legacyAssetsMaterialized) {
+        if (!m_job.materializingLegacyAssets) {
+            m_job.materializingLegacyAssets = true;
+            QTimer::singleShot(0, this, &MinecraftInstallService::materializeLegacyAssetsBatch);
+        }
+        return;
+    }
     const QString instanceId = m_job.instance.id;
     const QString version = m_job.descriptor.id;
     Logger::info(QStringLiteral("Installed vanilla %1 for instance %2").arg(version, instanceId));

@@ -116,7 +116,7 @@ private:
     QVector<ProbeCase> m_cases;
     QTimer m_timeout;
     int m_index = 0;
-    int m_exitCode = 1;
+    int m_exitCode = 0;
 };
 
 } // namespace

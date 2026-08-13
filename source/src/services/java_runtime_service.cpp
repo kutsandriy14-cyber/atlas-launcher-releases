@@ -18,7 +18,7 @@
 namespace atlas {
 namespace {
 constexpr auto kAdoptiumApiBase = "https://api.adoptium.net/v3/assets/latest/";
-constexpr auto kUserAgent = "AtlasLauncher/0.2 (Windows 7+; Java runtime installer)";
+constexpr auto kUserAgent = "AtlasLauncher/0.3.3 (Windows 7+; Java runtime installer)";
 
 QString runtimeMetadataPath(const QString &runtimeDirectory)
 {
@@ -106,6 +106,7 @@ void JavaRuntimeService::ensureRuntime(int major)
     request.setHeader(QNetworkRequest::UserAgentHeader, QString::fromLatin1(kUserAgent));
     request.setTransferTimeout(60000);
     m_queryReply = m_network->get(request);
+    m_queryReply->setProperty("atlasRuntimeImageType", QStringLiteral("jre"));
     connect(m_queryReply, &QNetworkReply::finished, this, &JavaRuntimeService::onRuntimeManifestFinished);
 }
 
@@ -190,6 +191,7 @@ void JavaRuntimeService::onRuntimeManifestFinished()
 {
     if (!m_queryReply) return;
     const int major = m_pendingMajor;
+    const QString imageType = m_queryReply->property("atlasRuntimeImageType").toString();
     const auto networkError = m_queryReply->error();
     const QString errorText = m_queryReply->errorString();
     const QByteArray payload = m_queryReply->readAll();
@@ -203,6 +205,25 @@ void JavaRuntimeService::onRuntimeManifestFinished()
     QString error;
     const JavaRuntimeInfo info = parseRuntimeInfo(major, payload, &error);
     if (info.archiveName.isEmpty() || info.checksumSha256.isEmpty()) {
+        // У снятых с поддержки версий, в частности Java 16 для Minecraft 1.17,
+        // Adoptium больше не публикует отдельный JRE. JDK содержит тот же
+        // javaw.exe, поэтому безопасно повторяем запрос с типом jdk.
+        if (imageType == QStringLiteral("jre")) {
+            QUrl fallbackUrl(QString::fromLatin1(kAdoptiumApiBase) + QString::number(major) + QStringLiteral("/hotspot"));
+            QUrlQuery fallbackQuery;
+            fallbackQuery.addQueryItem(QStringLiteral("architecture"), QStringLiteral("x64"));
+            fallbackQuery.addQueryItem(QStringLiteral("image_type"), QStringLiteral("jdk"));
+            fallbackQuery.addQueryItem(QStringLiteral("os"), QStringLiteral("windows"));
+            fallbackQuery.addQueryItem(QStringLiteral("vendor"), QStringLiteral("eclipse"));
+            fallbackUrl.setQuery(fallbackQuery);
+            QNetworkRequest fallbackRequest(fallbackUrl);
+            fallbackRequest.setHeader(QNetworkRequest::UserAgentHeader, QString::fromLatin1(kUserAgent));
+            fallbackRequest.setTransferTimeout(60000);
+            m_queryReply = m_network->get(fallbackRequest);
+            m_queryReply->setProperty("atlasRuntimeImageType", QStringLiteral("jdk"));
+            connect(m_queryReply, &QNetworkReply::finished, this, &JavaRuntimeService::onRuntimeManifestFinished);
+            return;
+        }
         fail(major, error.isEmpty() ? QStringLiteral("API Java Runtime вернул неполные данные.") : error);
         return;
     }
@@ -229,7 +250,7 @@ JavaRuntimeInfo JavaRuntimeService::parseRuntimeInfo(int major, const QByteArray
     result.major = major;
     const QJsonDocument document = QJsonDocument::fromJson(payload);
     if (!document.isArray() || document.array().isEmpty()) {
-        if (error) *error = QStringLiteral("Для Java %1 не найден подходящий x64 JRE ZIP.").arg(major);
+        if (error) *error = QStringLiteral("Для Java %1 не найден подходящий x64 архив Runtime.").arg(major);
         return result;
     }
     const QJsonObject release = document.array().at(0).toObject();

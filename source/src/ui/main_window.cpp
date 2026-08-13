@@ -78,7 +78,19 @@ QFrame *lineSeparator()
 
 int javaMajorForMinecraftVersion(const QString &minecraftVersion)
 {
-    const QStringList parts = minecraftVersion.split(QLatin1Char('.'));
+    const QString normalized = minecraftVersion.trimmed().toLower();
+    // До-релизные идентификаторы Mojang не начинаются с "1." (a1.2.6,
+    // b1.7.3, inf-20100618 и т. п.), но по факту требуют Java 8. Раньше
+    // они ошибочно попадали в ветку Java 21 и не запускались.
+    if (normalized.startsWith(QStringLiteral("a"))
+        || normalized.startsWith(QStringLiteral("b"))
+        || normalized.startsWith(QStringLiteral("c"))
+        || normalized.startsWith(QStringLiteral("inf-"))
+        || normalized.startsWith(QStringLiteral("rd-"))) {
+        return 8;
+    }
+
+    const QStringList parts = normalized.split(QLatin1Char('.'));
     bool majorOk = false;
     bool minorOk = false;
     bool patchOk = false;
@@ -88,7 +100,7 @@ int javaMajorForMinecraftVersion(const QString &minecraftVersion)
 
     // Mojang runtime requirements: Java 8 through 1.16.5, Java 16 for 1.17,
     // Java 17 from 1.18 through 1.20.4, and Java 21 starting with 1.20.5.
-    // Unknown/non-release identifiers deliberately use the newest managed runtime.
+    // Современные нестабильные идентификаторы остаются на Java 21.
     if (!majorOk || !minorOk || major != 1) return 21;
     if (minor <= 16) return 8;
     if (minor == 17) return 16;
@@ -274,6 +286,7 @@ public:
         advancedForm->addRow(QStringLiteral("Подходящая Java"), m_javaRequired);
         m_atlasJavaMajor = new QComboBox;
         m_atlasJavaMajor->addItem(QStringLiteral("Java 8"), 8);
+        m_atlasJavaMajor->addItem(QStringLiteral("Java 16"), 16);
         m_atlasJavaMajor->addItem(QStringLiteral("Java 17"), 17);
         m_atlasJavaMajor->addItem(QStringLiteral("Java 21"), 21);
         const int atlasMajor = m_result.java.managedMajor > 0 ? m_result.java.managedMajor
@@ -1084,11 +1097,15 @@ QWidget *MainWindow::buildHomePage()
 
     auto *infoCard = qobject_cast<QFrame *>(makeCard());
     infoCard->layout()->addWidget(label(QStringLiteral("Быстрый старт"), QStringLiteral("cardTitle")));
-    infoCard->layout()->addWidget(label(QStringLiteral("Откройте библиотеку, создайте профиль Vanilla, Fabric, Legacy Fabric, Quilt, Forge или NeoForge, затем добавьте моды и ресурспаки из каталога. Импорт файловой сборки выполняется без обязательного подключения к сети."), QStringLiteral("muted")));
-    auto *libraryButton = button(QStringLiteral("Перейти в библиотеку"));
-    connect(libraryButton, &QPushButton::clicked, this, [this]() { showPage(1); });
+    infoCard->layout()->addWidget(label(QStringLiteral("Создайте профиль, Atlas сам подберёт Java и установит Minecraft. Моды, ресурспаки, шейдеры и готовые сборки доступны в каталоге."), QStringLiteral("muted")));
+    auto *createButton = button(QStringLiteral("＋  Создать сборку"), QStringLiteral("primaryButton"));
+    createButton->setToolTip(QStringLiteral("Выберите Minecraft, загрузчик и настройки нового игрового профиля"));
+    connect(createButton, &QPushButton::clicked, this, &MainWindow::createInstance);
+    auto *catalogButton = button(QStringLiteral("Открыть каталог"));
+    connect(catalogButton, &QPushButton::clicked, this, [this]() { showPage(2); });
     auto *quickAction = new QHBoxLayout;
-    quickAction->addWidget(libraryButton);
+    quickAction->addWidget(createButton);
+    quickAction->addWidget(catalogButton);
     quickAction->addStretch();
     static_cast<QVBoxLayout *>(infoCard->layout())->addLayout(quickAction);
     layout->addWidget(infoCard);
@@ -2315,13 +2332,21 @@ void MainWindow::launchSelected()
             return;
         }
     } else {
-        const JavaRuntimeInfo runtime = m_javaRuntimeService->installedRuntime(requiredJava);
+        const int managedMajor = instance.java.runtimeMode == JavaRuntimeMode::AtlasManaged
+            && instance.java.managedMajor > 0 ? instance.java.managedMajor : requiredJava;
+        if (!JavaRuntimeService::isCompatibleMajor(managedMajor, requiredJava)) {
+            QMessageBox::warning(this, QStringLiteral("Неподходящая Java Atlas"),
+                QStringLiteral("Для «%1» нужна Java %2, но в профиле выбрана Java %3. Откройте параметры сборки и выберите подходящую Java либо «Автовыбор».")
+                    .arg(instance.name).arg(requiredJava).arg(managedMajor));
+            return;
+        }
+        const JavaRuntimeInfo runtime = m_javaRuntimeService->installedRuntime(managedMajor);
         javaPath = runtime.javawPath;
         if (javaPath.isEmpty()) {
             m_pendingLaunchInstanceId = instance.id;
-            m_javaRuntimeService->ensureRuntime(requiredJava);
+            m_javaRuntimeService->ensureRuntime(managedMajor);
             setStatus(QStringLiteral("Для «%1» скачивается локальная Java %2. Запуск продолжится после установки.")
-                          .arg(instance.name).arg(requiredJava), 0);
+                          .arg(instance.name).arg(managedMajor), 0);
             return;
         }
     }
@@ -2811,7 +2836,7 @@ void MainWindow::requestCatalogIcon(const QString &iconUrl)
 
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8");
-    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.2 (catalog thumbnails)");
+    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.3 (catalog thumbnails)");
     auto *reply = m_catalogIconNetwork->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, iconUrl]() {
         const QByteArray data = reply->readAll();

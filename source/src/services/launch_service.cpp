@@ -111,9 +111,16 @@ QString mavenPath(const QString &coordinate)
 
 QString libraryRelativePath(const QJsonObject &library)
 {
-    const QString artifactPath = library.value(QStringLiteral("downloads")).toObject()
-        .value(QStringLiteral("artifact")).toObject().value(QStringLiteral("path")).toString();
-    return artifactPath.isEmpty() ? mavenPath(library.value(QStringLiteral("name")).toString()) : artifactPath;
+    const QJsonObject downloads = library.value(QStringLiteral("downloads")).toObject();
+    const QString artifactPath = downloads.value(QStringLiteral("artifact")).toObject()
+        .value(QStringLiteral("path")).toString();
+    if (!artifactPath.isEmpty()) return artifactPath;
+
+    // Modern metadata can describe a native archive only (for example
+    // lwjgl-platform). It belongs to the natives directory, not to classpath.
+    // Maven fallback is reserved for genuine legacy entries without downloads.
+    if (!downloads.isEmpty()) return {};
+    return mavenPath(library.value(QStringLiteral("name")).toString());
 }
 
 QJsonArray mergedLibraries(const QJsonArray &baseLibraries, const QJsonArray &profileLibraries)

@@ -3,6 +3,7 @@
 #include "domain/types.h"
 #include "services/download_manager.h"
 
+#include <QHash>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QProcess>
@@ -109,6 +110,7 @@ private:
     QString m_requestMinecraftVersion;
     QString m_requestLoaderVersion;
     QVector<LoaderVersionDescriptor> m_versions;
+    QHash<QString, QVector<LoaderVersionDescriptor>> m_versionCache;
     InstallJob m_job;
     quint64 m_sequence = 0;
 };

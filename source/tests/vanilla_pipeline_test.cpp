@@ -6,6 +6,10 @@
 #include "services/minecraft_install_service.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <cstdio>
 
@@ -38,7 +42,9 @@ public:
 
     void start()
     {
-        m_installService->refreshVersions(false);
+        // Запрашиваем все официальные категории: параметр версии может быть
+        // release, snapshot, old_beta или old_alpha.
+        m_installService->refreshVersions(true, true, true);
         m_timeoutTimer = startTimer(15 * 60 * 1000);
     }
 
@@ -84,6 +90,13 @@ private slots:
 
     void onInstallFinished(const QString &, const QString &version)
     {
+        QString legacyError;
+        if (!validateLegacyResources(version, &legacyError)) {
+            std::fprintf(stderr, "legacy resources validation failed: %s\n", legacyError.toUtf8().constData());
+            m_exitCode = 7;
+            QCoreApplication::quit();
+            return;
+        }
         std::printf("install finished for %s; completed tasks: %lld\n",
                     version.toUtf8().constData(), static_cast<long long>(m_completedCount));
         m_exitCode = 0;
@@ -95,6 +108,47 @@ private slots:
         std::fprintf(stderr, "installError: %s\n", error.toUtf8().constData());
         m_exitCode = 5;
         QCoreApplication::quit();
+    }
+
+    bool validateLegacyResources(const QString &version, QString *error) const
+    {
+        // MinecraftInstallService получает data-dir `<work>/game` и использует
+        // `<data-dir>/game` как корневой каталог Minecraft.
+        const QString minecraftRoot = m_workDir + QStringLiteral("/game/game");
+        QFile metadataFile(minecraftRoot + QStringLiteral("/versions/%1/%1.json").arg(version));
+        if (!metadataFile.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("version metadata cannot be opened");
+            return false;
+        }
+        const QJsonDocument metadata = QJsonDocument::fromJson(metadataFile.readAll());
+        const QString assetId = metadata.object().value(QStringLiteral("assetIndex")).toObject()
+            .value(QStringLiteral("id")).toString();
+        if (assetId.isEmpty()) {
+            if (error) *error = QStringLiteral("version metadata does not contain asset index id");
+            return false;
+        }
+        QFile indexFile(minecraftRoot + QStringLiteral("/assets/indexes/%1.json").arg(assetId));
+        if (!indexFile.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("asset index cannot be opened");
+            return false;
+        }
+        const QJsonObject index = QJsonDocument::fromJson(indexFile.readAll()).object();
+        if (!index.value(QStringLiteral("map_to_resources")).toBool(false)) return true;
+
+        const QJsonObject objects = index.value(QStringLiteral("objects")).toObject();
+        if (objects.isEmpty()) {
+            if (error) *error = QStringLiteral("legacy asset index does not contain objects");
+            return false;
+        }
+        const QString probeRelativePath = objects.constBegin().key();
+        // map_to_resources относится к рабочей папке экземпляра, а не к
+        // общему Minecraft-каталогу libraries/assets.
+        const QString probePath = QDir(m_workDir + QStringLiteral("/game/resources")).filePath(probeRelativePath);
+        if (!QFileInfo(probePath).isFile()) {
+            if (error) *error = QStringLiteral("mapped legacy resource is missing: %1").arg(probePath);
+            return false;
+        }
+        return true;
     }
 
     void timerEvent(QTimerEvent *) override

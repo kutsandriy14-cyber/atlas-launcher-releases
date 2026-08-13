@@ -120,7 +120,10 @@ void DownloadManager::cancel(const QString &id)
 
 void DownloadManager::cancelAll()
 {
-    if (m_activeDownloads.isEmpty() && m_queue.isEmpty()) return;
+    // updateTask() ниже синхронно испускает taskChanged. Получатель может
+    // сообщить об ошибке установки и вызвать cancelAll() повторно; повторная
+    // очистка во время обхода m_tasks инвалидировала итератор QHash.
+    if (m_cancelAllRemaining || (m_activeDownloads.isEmpty() && m_queue.isEmpty())) return;
     m_cancelAllRemaining = true;
     for (auto it = m_tasks.begin(); it != m_tasks.end(); ++it) {
         if (it->state == DownloadState::Queued) {
@@ -130,7 +133,14 @@ void DownloadManager::cancelAll()
         }
     }
     m_queue.clear();
-    for (ActiveDownload *active : std::as_const(m_activeDownloads)) {
+    // abort() может синхронно вызвать finished и удалить ActiveDownload из
+    // m_activeDownloads. Поэтому не обходим QHash итератором или снапшотом
+    // указателей: работаем по стабильному списку идентификаторов и каждый раз
+    // заново проверяем, существует ли запись.
+    const QStringList activeIds = m_activeDownloads.keys();
+    for (const QString &id : activeIds) {
+        ActiveDownload *active = m_activeDownloads.value(id, nullptr);
+        if (!active) continue;
         active->cancelRequested = true;
         if (active->reply) active->reply->abort();
     }

@@ -13,6 +13,7 @@
 #include <QNetworkRequest>
 #include <QSaveFile>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QUuid>
 #include <QXmlStreamReader>
 
@@ -86,6 +87,11 @@ bool isAtLeast(const MinecraftReleaseVersion &version, int minor, int patch = 0)
 bool isAtMost(const MinecraftReleaseVersion &version, int minor, int patch = 0)
 {
     return version.minor < minor || (version.minor == minor && version.patch <= patch);
+}
+
+QString versionCacheKey(LoaderKind kind, const QString &minecraftVersion)
+{
+    return QString::number(static_cast<int>(kind)) + QLatin1Char('|') + minecraftVersion.trimmed();
 }
 
 bool loaderSupportsMinecraftVersion(LoaderKind kind, const QString &minecraftVersion)
@@ -167,6 +173,18 @@ void LoaderInstallService::refreshVersions(LoaderKind kind, const QString &minec
                            .arg(loaderKindToString(kind), minecraftVersion));
         return;
     }
+
+    const QString cacheKey = versionCacheKey(kind, minecraftVersion);
+    const auto cached = m_versionCache.constFind(cacheKey);
+    if (cached != m_versionCache.constEnd()) {
+        const QVector<LoaderVersionDescriptor> cachedVersions = cached.value();
+        m_versions = cachedVersions;
+        QTimer::singleShot(0, this, [this, kind, minecraftVersion, cachedVersions]() {
+            emit versionsReady(kind, minecraftVersion, cachedVersions);
+        });
+        return;
+    }
+
     requestJson(QUrl(loaderVersionsUrl(kind, minecraftVersion)), RequestPurpose::VersionList, kind, minecraftVersion);
 }
 
@@ -325,8 +343,10 @@ void LoaderInstallService::requestInstallerChecksum(LoaderKind kind, const QStri
     m_requestMinecraftVersion = m_job.instance.minecraftVersion;
     m_requestLoaderVersion = loaderVersion;
     QNetworkRequest request(checksumUrl);
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.2 (installer verification)"));
-    request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.3.3 (installer verification)"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(60000);
     m_reply = m_network.get(request);
     connect(m_reply, &QNetworkReply::finished, this, &LoaderInstallService::onNetworkReply);
 }
@@ -351,8 +371,10 @@ void LoaderInstallService::requestJson(const QUrl &url, RequestPurpose purpose, 
     m_requestMinecraftVersion = minecraftVersion;
     m_requestLoaderVersion = loaderVersion;
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.2 (loader installer)"));
-    request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("AtlasLauncher/0.3.3 (loader installer)"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(60000);
     m_reply = m_network.get(request);
     connect(m_reply, &QNetworkReply::finished, this, &LoaderInstallService::onNetworkReply);
 }
@@ -379,7 +401,7 @@ void LoaderInstallService::onNetworkReply()
         else failInstall(message);
         return;
     }
-        if (purpose == RequestPurpose::InstallerChecksum) {
+    if (purpose == RequestPurpose::InstallerChecksum) {
         const int length = kind == LoaderKind::Forge ? 40 : 64;
         const QRegularExpression checksumPattern(QStringLiteral("\\b([A-Fa-f0-9]{%1})\\b").arg(length));
         const QRegularExpressionMatch match = checksumPattern.match(QString::fromUtf8(payload));
@@ -459,6 +481,7 @@ void LoaderInstallService::parseVersionList(const QJsonDocument &document, Loade
         emit versionsError(kind, minecraftVersion, QStringLiteral("Официальный metadata API не вернул совместимых версий загрузчика."));
         return;
     }
+    m_versionCache.insert(versionCacheKey(kind, minecraftVersion), versions);
     emit versionsReady(kind, minecraftVersion, versions);
 }
 
@@ -507,6 +530,8 @@ void LoaderInstallService::parseMavenVersionList(const QByteArray &payload, Load
         else failInstall(message);
         return;
     }
+
+    m_versionCache.insert(versionCacheKey(kind, minecraftVersion), versions);
 
     if (purpose == RequestPurpose::InstallVersionList) {
         LoaderVersionDescriptor selected;
