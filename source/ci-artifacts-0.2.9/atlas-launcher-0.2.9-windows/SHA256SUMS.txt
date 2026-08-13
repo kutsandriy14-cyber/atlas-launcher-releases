@@ -1,2 +1,0 @@
-c8590a4a3f0be674e23203732bd724ab3cfa7c65b6a758a1496d08654c405631  AtlasLauncher-0.2.9-win64-portable.zip
-32b71c901a89a7e2dee8060d3b10117f27e9af6bd83f9395d8d58b589e829f95  installer/AtlasLauncher-Setup-0.2.9-x64.exe
