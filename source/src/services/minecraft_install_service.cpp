@@ -14,6 +14,7 @@
 #include <QNetworkRequest>
 #include <QTimer>
 #include <QUuid>
+#include <QUrl>
 
 namespace atlas {
 namespace {
@@ -36,10 +37,36 @@ QString mavenPath(const QString &coordinate)
         version = version.left(at);
     }
     if (parts.size() >= 4) classifier = parts.at(3);
+    if (group.isEmpty() || artifact.isEmpty() || version.isEmpty() || extension.isEmpty()) return {};
     QString fileName = artifact + QLatin1Char('-') + version;
     if (!classifier.isEmpty()) fileName += QLatin1Char('-') + classifier;
     fileName += QLatin1Char('.') + extension;
     return group + QLatin1Char('/') + artifact + QLatin1Char('/') + version + QLatin1Char('/') + fileName;
+}
+
+QUrl secureMojangUrl(const QString &rawUrl)
+{
+    QUrl url(rawUrl.trimmed());
+    if (url.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) != 0) return url;
+
+    // Старые official JSON иногда ссылаются на публичный Mojang S3 по HTTP.
+    // Те же хосты поддерживают HTTPS, поэтому загрузчик не ослабляет правило
+    // «только HTTPS» ради legacy-версий.
+    const QString host = url.host();
+    if (host.compare(QStringLiteral("s3.amazonaws.com"), Qt::CaseInsensitive) == 0 ||
+        host.compare(QStringLiteral("libraries.minecraft.net"), Qt::CaseInsensitive) == 0 ||
+        host.compare(QStringLiteral("launcher.mojang.com"), Qt::CaseInsensitive) == 0) {
+        url.setScheme(QStringLiteral("https"));
+    }
+    return url;
+}
+
+QUrl legacyMavenUrl(const QString &baseUrl, const QString &path)
+{
+    QString base = baseUrl.trimmed();
+    if (base.isEmpty()) base = QStringLiteral("https://libraries.minecraft.net/");
+    if (!base.endsWith(QLatin1Char('/'))) base.append(QLatin1Char('/'));
+    return secureMojangUrl(base + path);
 }
 
 bool sha1Matches(const QString &path, const QString &expected)
@@ -70,9 +97,9 @@ MinecraftInstallService::MinecraftInstallService(const QString &dataDirectory,
             this, &MinecraftInstallService::onTaskChanged);
 }
 
-void MinecraftInstallService::refreshVersions(bool includeSnapshots)
+void MinecraftInstallService::refreshVersions(bool includeSnapshots, bool includeOldBeta, bool includeOldAlpha)
 {
-    requestManifest(includeSnapshots);
+    requestManifest(includeSnapshots, includeOldBeta, includeOldAlpha);
 }
 
 QVector<MinecraftVersionDescriptor> MinecraftInstallService::versions() const
@@ -90,7 +117,7 @@ QString MinecraftInstallService::gameDirectory() const
     return QDir(m_dataDirectory).filePath(QStringLiteral("game"));
 }
 
-void MinecraftInstallService::requestManifest(bool includeSnapshots)
+void MinecraftInstallService::requestManifest(bool includeSnapshots, bool includeOldBeta, bool includeOldAlpha)
 {
     if (m_manifestReply) {
         QNetworkReply *previousReply = m_manifestReply;
@@ -103,6 +130,8 @@ void MinecraftInstallService::requestManifest(bool includeSnapshots)
     request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
     m_manifestReply = m_network.get(request);
     m_manifestReply->setProperty("includeSnapshots", includeSnapshots);
+    m_manifestReply->setProperty("includeOldBeta", includeOldBeta);
+    m_manifestReply->setProperty("includeOldAlpha", includeOldAlpha);
     connect(m_manifestReply, &QNetworkReply::finished, this, &MinecraftInstallService::onManifestReply);
 }
 
@@ -119,6 +148,8 @@ void MinecraftInstallService::onManifestReply()
     }
     m_manifestReply = nullptr;
     const bool includeSnapshots = reply->property("includeSnapshots").toBool();
+    const bool includeOldBeta = reply->property("includeOldBeta").toBool();
+    const bool includeOldAlpha = reply->property("includeOldAlpha").toBool();
     const QNetworkReply::NetworkError networkError = reply->error();
     const QString networkErrorText = reply->errorString();
     const QByteArray payload = reply->readAll();
@@ -142,9 +173,11 @@ void MinecraftInstallService::onManifestReply()
         descriptor.metadataUrl = object.value(QStringLiteral("url")).toString();
         descriptor.metadataSha1 = object.value(QStringLiteral("sha1")).toString();
         descriptor.releaseTime = QDateTime::fromString(object.value(QStringLiteral("releaseTime")).toString(), Qt::ISODate);
-        if (descriptor.type == QStringLiteral("release") || includeSnapshots) {
-            if (descriptor.isValid()) found.append(descriptor);
-        }
+        const bool selected = descriptor.type == QStringLiteral("release")
+            || (descriptor.type == QStringLiteral("snapshot") && includeSnapshots)
+            || (descriptor.type == QStringLiteral("old_beta") && includeOldBeta)
+            || (descriptor.type == QStringLiteral("old_alpha") && includeOldAlpha);
+        if (selected && descriptor.isValid()) found.append(descriptor);
     }
     if (found.isEmpty()) {
         emit versionsError(QStringLiteral("Официальный Mojang manifest не содержит доступных версий."));
@@ -247,21 +280,21 @@ void MinecraftInstallService::parseVersionMetadata()
 void MinecraftInstallService::scheduleVersionFiles(const QJsonObject &metadata)
 {
     const QJsonObject client = metadata.value(QStringLiteral("downloads")).toObject().value(QStringLiteral("client")).toObject();
-    const QString clientUrl = client.value(QStringLiteral("url")).toString();
+    const QUrl clientUrl = secureMojangUrl(client.value(QStringLiteral("url")).toString());
     const QString clientSha1 = client.value(QStringLiteral("sha1")).toString();
-    if (!clientUrl.startsWith(QStringLiteral("https://")) || clientSha1.isEmpty()) {
+    if (clientUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0 || clientSha1.isEmpty()) {
         failInstall(QStringLiteral("Mojang metadata не содержит проверяемый client JAR."));
         return;
     }
     const QString clientPath = QDir(versionDirectory(m_job.descriptor.id)).filePath(m_job.descriptor.id + QStringLiteral(".jar"));
     enqueueFile(newTaskId(QStringLiteral("client")), QStringLiteral("Minecraft %1: client JAR").arg(m_job.descriptor.id),
-                QUrl(clientUrl), clientPath, clientSha1, client.value(QStringLiteral("size")).toVariant().toLongLong());
+                clientUrl, clientPath, clientSha1, client.value(QStringLiteral("size")).toVariant().toLongLong());
 
     const QJsonObject assetIndex = metadata.value(QStringLiteral("assetIndex")).toObject();
-    const QString assetUrl = assetIndex.value(QStringLiteral("url")).toString();
+    const QUrl assetUrl = secureMojangUrl(assetIndex.value(QStringLiteral("url")).toString());
     const QString assetSha1 = assetIndex.value(QStringLiteral("sha1")).toString();
     const QString assetId = assetIndex.value(QStringLiteral("id")).toString();
-    if (!assetUrl.startsWith(QStringLiteral("https://")) || assetSha1.isEmpty() || assetId.isEmpty()) {
+    if (assetUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0 || assetSha1.isEmpty() || assetId.isEmpty()) {
         failInstall(QStringLiteral("Mojang metadata не содержит проверяемый asset index."));
         return;
     }
@@ -273,8 +306,20 @@ void MinecraftInstallService::scheduleVersionFiles(const QJsonObject &metadata)
         m_job.assetIndexTaskId = newTaskId(QStringLiteral("asset-index"));
         m_job.awaitingAssetIndex = true;
         enqueueFile(m_job.assetIndexTaskId, QStringLiteral("Minecraft %1: asset index").arg(m_job.descriptor.id),
-                    QUrl(assetUrl), m_job.assetIndexPath, assetSha1,
+                    assetUrl, m_job.assetIndexPath, assetSha1,
                     assetIndex.value(QStringLiteral("size")).toVariant().toLongLong());
+    }
+
+    const QJsonObject loggingFile = metadata.value(QStringLiteral("logging")).toObject()
+        .value(QStringLiteral("client")).toObject().value(QStringLiteral("file")).toObject();
+    const QString loggingId = loggingFile.value(QStringLiteral("id")).toString();
+    const QUrl loggingUrl = secureMojangUrl(loggingFile.value(QStringLiteral("url")).toString());
+    const QString loggingSha1 = loggingFile.value(QStringLiteral("sha1")).toString();
+    if (!loggingId.isEmpty() && QFileInfo(loggingId).fileName() == loggingId &&
+        loggingUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 && !loggingSha1.isEmpty()) {
+        const QString loggingPath = QDir(gameDirectory()).filePath(QStringLiteral("assets/log_configs/%1").arg(loggingId));
+        enqueueFile(newTaskId(QStringLiteral("log-config")), QStringLiteral("Minecraft %1: конфигурация журнала").arg(m_job.descriptor.id),
+                    loggingUrl, loggingPath, loggingSha1, loggingFile.value(QStringLiteral("size")).toVariant().toLongLong());
     }
 
     for (const QJsonValue &value : metadata.value(QStringLiteral("libraries")).toArray()) {
@@ -282,28 +327,45 @@ void MinecraftInstallService::scheduleVersionFiles(const QJsonObject &metadata)
         if (!libraryAllowedOnWindows(library)) continue;
         const QJsonObject downloads = library.value(QStringLiteral("downloads")).toObject();
         const QJsonObject artifact = downloads.value(QStringLiteral("artifact")).toObject();
+        const QString name = library.value(QStringLiteral("name")).toString();
         const QString artifactPath = artifact.value(QStringLiteral("path")).toString();
-        const QString artifactUrl = artifact.value(QStringLiteral("url")).toString();
+        const QUrl artifactUrl = secureMojangUrl(artifact.value(QStringLiteral("url")).toString());
         const QString artifactSha1 = artifact.value(QStringLiteral("sha1")).toString();
-        if (!artifactPath.isEmpty() && artifactUrl.startsWith(QStringLiteral("https://")) && !artifactSha1.isEmpty()) {
-            enqueueFile(newTaskId(QStringLiteral("library")), QStringLiteral("Библиотека %1").arg(library.value(QStringLiteral("name")).toString()),
-                        QUrl(artifactUrl), libraryDestination(artifactPath), artifactSha1,
+        if (!artifactPath.isEmpty() && artifactUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 && !artifactSha1.isEmpty()) {
+            enqueueFile(newTaskId(QStringLiteral("library")), QStringLiteral("Библиотека %1").arg(name),
+                        artifactUrl, libraryDestination(artifactPath), artifactSha1,
                         artifact.value(QStringLiteral("size")).toVariant().toLongLong());
+        } else {
+            // Старые JSON и некоторые legacy loader profiles задают только Maven
+            // coordinate и базовый URL. Без SHA-1 задача выполняется без ложной
+            // проверки, но по-прежнему только через допустимый HTTPS-источник.
+            const QString legacyPath = mavenPath(name);
+            const QUrl legacyUrl = legacyMavenUrl(library.value(QStringLiteral("url")).toString(), legacyPath);
+            if (!legacyPath.isEmpty() && legacyUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0) {
+                enqueueFile(newTaskId(QStringLiteral("library")), QStringLiteral("Библиотека %1").arg(name),
+                            legacyUrl, libraryDestination(legacyPath), QString(), -1);
+            }
         }
 
         const QJsonObject natives = library.value(QStringLiteral("natives")).toObject();
         QString classifier = natives.value(QStringLiteral("windows")).toString();
         classifier.replace(QStringLiteral("${arch}"), QStringLiteral("64"));
         const QJsonObject nativeFile = downloads.value(QStringLiteral("classifiers")).toObject().value(classifier).toObject();
-        if (!classifier.isEmpty() && nativeFile.value(QStringLiteral("url")).toString().startsWith(QStringLiteral("https://")) &&
-            !nativeFile.value(QStringLiteral("sha1")).toString().isEmpty()) {
-            const QString nativePath = nativeFile.value(QStringLiteral("path")).toString().isEmpty()
-                ? mavenPath(library.value(QStringLiteral("name")).toString() + QLatin1Char(':') + classifier)
-                : nativeFile.value(QStringLiteral("path")).toString();
-            if (!nativePath.isEmpty()) {
-                enqueueFile(newTaskId(QStringLiteral("native")), QStringLiteral("Windows-библиотека %1").arg(library.value(QStringLiteral("name")).toString()),
-                            QUrl(nativeFile.value(QStringLiteral("url")).toString()), libraryDestination(nativePath),
-                            nativeFile.value(QStringLiteral("sha1")).toString(), nativeFile.value(QStringLiteral("size")).toVariant().toLongLong());
+        const QString nativePath = nativeFile.value(QStringLiteral("path")).toString().isEmpty()
+            ? mavenPath(name + QLatin1Char(':') + classifier)
+            : nativeFile.value(QStringLiteral("path")).toString();
+        const QUrl nativeUrl = secureMojangUrl(nativeFile.value(QStringLiteral("url")).toString());
+        const QString nativeSha1 = nativeFile.value(QStringLiteral("sha1")).toString();
+        if (!classifier.isEmpty() && !nativePath.isEmpty() &&
+            nativeUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 && !nativeSha1.isEmpty()) {
+            enqueueFile(newTaskId(QStringLiteral("native")), QStringLiteral("Windows-библиотека %1").arg(name),
+                        nativeUrl, libraryDestination(nativePath), nativeSha1,
+                        nativeFile.value(QStringLiteral("size")).toVariant().toLongLong());
+        } else if (!classifier.isEmpty() && !nativePath.isEmpty()) {
+            const QUrl legacyNativeUrl = legacyMavenUrl(library.value(QStringLiteral("url")).toString(), nativePath);
+            if (legacyNativeUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0) {
+                enqueueFile(newTaskId(QStringLiteral("native")), QStringLiteral("Windows-библиотека %1").arg(name),
+                            legacyNativeUrl, libraryDestination(nativePath), QString(), -1);
             }
         }
     }
@@ -385,7 +447,7 @@ void MinecraftInstallService::enqueueFile(const QString &taskId, const QString &
     }
     request.destinationPath = destination;
     request.checksum = sha1;
-    request.checksumAlgorithm = ChecksumAlgorithm::Sha1;
+    request.checksumAlgorithm = sha1.trimmed().isEmpty() ? ChecksumAlgorithm::None : ChecksumAlgorithm::Sha1;
     request.expectedSize = size > 0 ? size : -1;
     m_job.pendingTaskIds.insert(taskId);
     m_downloadManager->enqueue(request);

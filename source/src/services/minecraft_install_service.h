@@ -34,7 +34,8 @@ public:
                                     DownloadManager *downloadManager,
                                     QObject *parent = nullptr);
 
-    void refreshVersions(bool includeSnapshots = false);
+    void refreshVersions(bool includeSnapshots = false, bool includeOldBeta = false,
+                         bool includeOldAlpha = false);
     QVector<MinecraftVersionDescriptor> versions() const;
     void installVanilla(const Instance &instance);
     bool isInstalling() const;
@@ -64,7 +65,7 @@ private:
         bool failed = false;
     };
 
-    void requestManifest(bool includeSnapshots);
+    void requestManifest(bool includeSnapshots, bool includeOldBeta, bool includeOldAlpha);
     void parseVersionMetadata();
     void scheduleMetadata(const MinecraftVersionDescriptor &descriptor);
     void scheduleVersionFiles(const QJsonObject &metadata);

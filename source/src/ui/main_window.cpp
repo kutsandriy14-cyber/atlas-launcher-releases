@@ -112,31 +112,18 @@ int curseForgeClassId(ContentType type)
     return 0;
 }
 
-bool supportsNeoForgeMinecraftVersion(const QString &minecraftVersion)
-{
-    const QStringList parts = minecraftVersion.split(QLatin1Char('.'));
-    bool majorOk = false;
-    bool minorOk = false;
-    bool patchOk = false;
-    const int major = parts.value(0).toInt(&majorOk);
-    const int minor = parts.value(1).toInt(&minorOk);
-    const int patch = parts.value(2).toInt(&patchOk);
-    if (!majorOk || !minorOk) return false;
-    if (major != 1) return major > 1;
-    if (minor != 20) return minor > 20;
-    return patchOk && patch >= 2;
-}
-
 class BuildEditorDialog final : public QDialog
 {
 public:
     BuildEditorDialog(const QVector<MinecraftVersionDescriptor> &versions, const Instance &initial,
                       int defaultMinMemory, int defaultMaxMemory, JavaRuntimeService *javaRuntimeService,
                       MinecraftInstallService *minecraftInstallService,
-                      LoaderInstallService *loaderInstallService, QWidget *parent)
+                      LoaderInstallService *loaderInstallService, bool showSnapshots, bool showOldBeta,
+                      bool showOldAlpha, QWidget *parent)
         : QDialog(parent), m_result(initial), m_editing(!initial.id.isEmpty()),
           m_javaRuntimeService(javaRuntimeService), m_minecraftInstallService(minecraftInstallService),
-          m_loaderInstallService(loaderInstallService)
+          m_loaderInstallService(loaderInstallService), m_showSnapshots(showSnapshots),
+          m_showOldBeta(showOldBeta), m_showOldAlpha(showOldAlpha)
     {
         setWindowTitle(m_editing ? QStringLiteral("Изменить сборку") : QStringLiteral("Новая сборка"));
         setModal(true);
@@ -195,14 +182,6 @@ public:
         m_loader->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_loader->setMinimumContentsLength(14);
         m_loader->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        m_loader->addItem(QStringLiteral("Vanilla — без загрузчика"), static_cast<int>(LoaderKind::Vanilla));
-        m_loader->addItem(QStringLiteral("Fabric"), static_cast<int>(LoaderKind::Fabric));
-        m_loader->addItem(QStringLiteral("Legacy Fabric — для 1.12.2 и старее"), static_cast<int>(LoaderKind::LegacyFabric));
-        m_loader->addItem(QStringLiteral("Quilt"), static_cast<int>(LoaderKind::Quilt));
-        m_loader->addItem(QStringLiteral("Forge"), static_cast<int>(LoaderKind::Forge));
-        m_loader->addItem(QStringLiteral("NeoForge"), static_cast<int>(LoaderKind::NeoForge));
-        const int loaderIndex = m_loader->findData(static_cast<int>(m_result.loader.kind));
-        if (loaderIndex >= 0) m_loader->setCurrentIndex(loaderIndex);
         basicForm->addRow(QStringLiteral("Загрузчик"), m_loader);
         m_loaderVersionCombo = new QComboBox;
         m_loaderVersionCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -336,6 +315,29 @@ public:
         m_acceptButton = buttons->addButton(m_editing ? QStringLiteral("Сохранить") : QStringLiteral("Создать и установить"), QDialogButtonBox::AcceptRole);
         outer->addWidget(buttons);
 
+        const QVector<QPair<QString, LoaderKind>> loaderOptions{
+            {QStringLiteral("Vanilla — без загрузчика"), LoaderKind::Vanilla},
+            {QStringLiteral("Fabric"), LoaderKind::Fabric},
+            {QStringLiteral("Legacy Fabric — для 1.13.2 и старее"), LoaderKind::LegacyFabric},
+            {QStringLiteral("Quilt"), LoaderKind::Quilt},
+            {QStringLiteral("Forge"), LoaderKind::Forge},
+            {QStringLiteral("NeoForge"), LoaderKind::NeoForge}
+        };
+        const auto updateCompatibleLoaders = [this, loaderOptions]() {
+            const LoaderKind previous = m_loader->currentIndex() >= 0
+                ? static_cast<LoaderKind>(m_loader->currentData().toInt()) : m_result.loader.kind;
+            const QString minecraftVersion = m_version->currentData().toString();
+            QSignalBlocker blocker(m_loader);
+            m_loader->clear();
+            for (const auto &option : loaderOptions) {
+                const bool show = option.second == LoaderKind::Vanilla || minecraftVersion.isEmpty()
+                    || (m_loaderInstallService && m_loaderInstallService->supportsMinecraftVersion(option.second, minecraftVersion));
+                if (show) m_loader->addItem(option.first, static_cast<int>(option.second));
+            }
+            int desiredIndex = m_loader->findData(static_cast<int>(previous));
+            if (desiredIndex < 0) desiredIndex = m_loader->findData(static_cast<int>(LoaderKind::Vanilla));
+            m_loader->setCurrentIndex(qMax(0, desiredIndex));
+        };
         const auto refreshLoaderVersions = [this]() {
             const LoaderKind kind = static_cast<LoaderKind>(m_loader->currentData().toInt());
             const QString minecraftVersion = m_version->currentData().toString();
@@ -356,11 +358,11 @@ public:
                                           .arg(loaderKindToString(kind)));
                 return;
             }
-            if (kind == LoaderKind::NeoForge && !supportsNeoForgeMinecraftVersion(minecraftVersion)) {
-                m_loaderVersionCombo->addItem(QStringLiteral("NeoForge недоступен для этой версии"));
+            if (m_loaderInstallService && !m_loaderInstallService->supportsMinecraftVersion(kind, minecraftVersion)) {
+                m_loaderVersionCombo->addItem(QStringLiteral("Загрузчик недоступен для этой версии"));
                 m_loaderVersionCombo->setEnabled(false);
-                m_loaderHint->setText(QStringLiteral("NeoForge поддерживает Minecraft 1.20.2 и новее. Для %1 выберите Forge, Fabric, Quilt или Vanilla.")
-                                          .arg(minecraftVersion));
+                m_loaderHint->setText(QStringLiteral("%1 не поддерживает Minecraft %2. Atlas скрывает несовместимые загрузчики автоматически.")
+                                          .arg(loaderKindToString(kind), minecraftVersion));
                 return;
             }
             if (!m_loaderInstallService) {
@@ -443,11 +445,15 @@ public:
         connect(m_versionRefreshButton, &QPushButton::clicked, this, [this]() {
             requestMinecraftVersions();
         });
+        updateCompatibleLoaders();
         refreshLoaderVersions();
         connect(m_loader, qOverload<int>(&QComboBox::currentIndexChanged), this,
                 [refreshLoaderVersions](int) { refreshLoaderVersions(); });
         connect(m_version, qOverload<int>(&QComboBox::currentIndexChanged), this,
-                [refreshLoaderVersions](int) { refreshLoaderVersions(); });
+                [updateCompatibleLoaders, refreshLoaderVersions](int) {
+                    updateCompatibleLoaders();
+                    refreshLoaderVersions();
+                });
         connect(m_useAtlasFolder, &QCheckBox::toggled, this, [this](bool useAtlasFolder) {
             m_gameFolder->setEnabled(!useAtlasFolder);
             m_folderBrowse->setEnabled(!useAtlasFolder);
@@ -654,7 +660,7 @@ private:
                 ? QStringLiteral("Обновляется официальный список версий Mojang…")
                 : QStringLiteral("Получаем официальный список версий Mojang…"));
         }
-        m_minecraftInstallService->refreshVersions(false);
+        m_minecraftInstallService->refreshVersions(m_showSnapshots, m_showOldBeta, m_showOldAlpha);
     }
 
     void showMinecraftVersionsError(const QString &message)
@@ -683,6 +689,9 @@ private:
     JavaRuntimeService *m_javaRuntimeService = nullptr;
     MinecraftInstallService *m_minecraftInstallService = nullptr;
     LoaderInstallService *m_loaderInstallService = nullptr;
+    bool m_showSnapshots = false;
+    bool m_showOldBeta = false;
+    bool m_showOldAlpha = false;
     QLineEdit *m_name = nullptr;
     QComboBox *m_version = nullptr;
     QPushButton *m_versionRefreshButton = nullptr;
@@ -1470,11 +1479,17 @@ QWidget *MainWindow::buildSettingsPage()
     m_maxMemory->setSuffix(QStringLiteral(" MiB"));
     m_maxMemory->setValue(m_settings.maxMemoryMiB);
     minecraftForm->addRow(QStringLiteral("Максимум памяти"), m_maxMemory);
-    m_showSnapshots = new QCheckBox(QStringLiteral("Показывать snapshots в официальном списке Minecraft"));
+    m_showSnapshots = new QCheckBox(QStringLiteral("Показывать Snapshots в официальном списке Minecraft"));
     m_showSnapshots->setChecked(m_settings.showSnapshots);
     minecraftForm->addRow(QString(), m_showSnapshots);
+    m_showOldBeta = new QCheckBox(QStringLiteral("Показывать Beta (old_beta)"));
+    m_showOldBeta->setChecked(m_settings.showOldBeta);
+    minecraftForm->addRow(QString(), m_showOldBeta);
+    m_showOldAlpha = new QCheckBox(QStringLiteral("Показывать Alpha (old_alpha)"));
+    m_showOldAlpha->setChecked(m_settings.showOldAlpha);
+    minecraftForm->addRow(QString(), m_showOldAlpha);
     static_cast<QVBoxLayout *>(minecraftCard->layout())->addLayout(minecraftForm);
-    minecraftCard->layout()->addWidget(label(QStringLiteral("Без snapshots список остаётся только из стабильных официальных релизов Mojang. Память используется как значение по умолчанию для новых профилей."), QStringLiteral("muted")));
+    minecraftCard->layout()->addWidget(label(QStringLiteral("Release показаны всегда. Snapshots, Beta и Alpha Atlas получает из официального Mojang manifest только при включении соответствующего переключателя. Память используется как значение по умолчанию для новых профилей."), QStringLiteral("muted")));
     layout->addWidget(minecraftCard);
 
     auto *authCard = qobject_cast<QFrame *>(makeCard());
@@ -1942,7 +1957,7 @@ void MainWindow::refreshMinecraftVersions()
     }
     if (m_refreshVersionsButton) m_refreshVersionsButton->setEnabled(false);
     if (m_versionsStatus) m_versionsStatus->setText(QStringLiteral("Загружается официальный список версий Mojang…"));
-    m_minecraftInstallService->refreshVersions(false);
+    m_minecraftInstallService->refreshVersions(m_settings.showSnapshots, m_settings.showOldBeta, m_settings.showOldAlpha);
 }
 
 void MainWindow::showMinecraftVersions(const QVector<atlas::MinecraftVersionDescriptor> &versions)
@@ -1950,17 +1965,23 @@ void MainWindow::showMinecraftVersions(const QVector<atlas::MinecraftVersionDesc
     m_allMinecraftVersions = versions;
     m_minecraftVersions.clear();
     for (const MinecraftVersionDescriptor &version : std::as_const(m_allMinecraftVersions)) {
-        if (m_settings.showSnapshots || version.type != QStringLiteral("snapshot")) {
-            m_minecraftVersions.append(version);
-        }
+        const bool visible = version.type == QStringLiteral("release")
+            || (version.type == QStringLiteral("snapshot") && m_settings.showSnapshots)
+            || (version.type == QStringLiteral("old_beta") && m_settings.showOldBeta)
+            || (version.type == QStringLiteral("old_alpha") && m_settings.showOldAlpha);
+        if (visible) m_minecraftVersions.append(version);
     }
     if (m_refreshVersionsButton) m_refreshVersionsButton->setEnabled(true);
     if (m_versionsStatus) {
+        QStringList categories{QStringLiteral("Release")};
+        if (m_settings.showSnapshots) categories.append(QStringLiteral("Snapshots"));
+        if (m_settings.showOldBeta) categories.append(QStringLiteral("Beta"));
+        if (m_settings.showOldAlpha) categories.append(QStringLiteral("Alpha"));
         m_versionsStatus->setText(m_minecraftVersions.isEmpty()
             ? QStringLiteral("Официальный список версий пуст. Проверьте подключение к сети.")
-            : QStringLiteral("Доступно официальных версий: %1%2. При создании профиля версия выбирается из этого списка.")
+            : QStringLiteral("Доступно официальных версий: %1 (%2). При создании профиля версия выбирается из этого списка.")
                 .arg(m_minecraftVersions.size())
-                .arg(m_settings.showSnapshots ? QStringLiteral(" (включая snapshots)") : QStringLiteral("")));
+                .arg(categories.join(QStringLiteral(", "))));
     }
     refreshCatalogVersionChoices();
     setStatus(m_minecraftVersions.isEmpty()
@@ -2145,7 +2166,8 @@ void MainWindow::createInstance()
     draft.loader.kind = LoaderKind::Vanilla;
     draft.java.runtimeMode = JavaRuntimeMode::Automatic;
     BuildEditorDialog dialog(m_minecraftVersions, draft, m_settings.minMemoryMiB, m_settings.maxMemoryMiB,
-                             m_javaRuntimeService, m_minecraftInstallService, m_loaderInstallService, this);
+                             m_javaRuntimeService, m_minecraftInstallService, m_loaderInstallService,
+                             m_settings.showSnapshots, m_settings.showOldBeta, m_settings.showOldAlpha, this);
     if (dialog.exec() != QDialog::Accepted) return;
     draft = dialog.result();
 
@@ -2190,7 +2212,8 @@ void MainWindow::editSelectedInstance()
         return;
     }
     BuildEditorDialog dialog(m_minecraftVersions, selected, m_settings.minMemoryMiB, m_settings.maxMemoryMiB,
-                             m_javaRuntimeService, m_minecraftInstallService, m_loaderInstallService, this);
+                             m_javaRuntimeService, m_minecraftInstallService, m_loaderInstallService,
+                             m_settings.showSnapshots, m_settings.showOldBeta, m_settings.showOldAlpha, this);
     if (dialog.exec() != QDialog::Accepted) return;
     Instance updated = dialog.result();
     QString error;
@@ -2325,8 +2348,13 @@ void MainWindow::saveSettings()
     m_settings.javaPath = m_javaPath->text().trimmed();
     m_settings.theme = m_theme ? m_theme->currentData().toString() : QStringLiteral("obsidian");
     m_settings.language = m_language ? m_language->currentData().toString() : QStringLiteral("ru");
+    const bool versionCategoriesChanged = m_settings.showSnapshots != (m_showSnapshots && m_showSnapshots->isChecked())
+        || m_settings.showOldBeta != (m_showOldBeta && m_showOldBeta->isChecked())
+        || m_settings.showOldAlpha != (m_showOldAlpha && m_showOldAlpha->isChecked());
     m_settings.enableAnimations = m_enableAnimations && m_enableAnimations->isChecked();
     m_settings.showSnapshots = m_showSnapshots && m_showSnapshots->isChecked();
+    m_settings.showOldBeta = m_showOldBeta && m_showOldBeta->isChecked();
+    m_settings.showOldAlpha = m_showOldAlpha && m_showOldAlpha->isChecked();
     m_settings.offlinePlayerName = m_offlinePlayerName ? m_offlinePlayerName->text().trimmed() : QStringLiteral("Player");
     const QRegularExpression offlineNamePattern(QStringLiteral("^[A-Za-z0-9_]{3,16}$"));
     if (!offlineNamePattern.match(m_settings.offlinePlayerName).hasMatch()) {
@@ -2365,7 +2393,11 @@ void MainWindow::saveSettings()
     if (!m_activeAccount.isMicrosoft() && m_authService) {
         m_activeAccount = m_authService->offlineSession(m_settings.offlinePlayerName);
     }
-    if (!m_allMinecraftVersions.isEmpty()) showMinecraftVersions(m_allMinecraftVersions);
+    if (versionCategoriesChanged) {
+        refreshMinecraftVersions();
+    } else if (!m_allMinecraftVersions.isEmpty()) {
+        showMinecraftVersions(m_allMinecraftVersions);
+    }
     reloadInstances();
     updateAccountUi();
     updateHome();
@@ -2779,7 +2811,7 @@ void MainWindow::requestCatalogIcon(const QString &iconUrl)
 
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8");
-    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.1 (catalog thumbnails)");
+    request.setRawHeader("User-Agent", "AtlasLauncher/0.3.2 (catalog thumbnails)");
     auto *reply = m_catalogIconNetwork->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, iconUrl]() {
         const QByteArray data = reply->readAll();

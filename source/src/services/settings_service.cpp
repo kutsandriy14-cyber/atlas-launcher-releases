@@ -25,6 +25,8 @@ QJsonObject LauncherSettings::toJson() const
         {QStringLiteral("closeToTray"), closeToTray},
         {QStringLiteral("enableAnimations"), enableAnimations},
         {QStringLiteral("showSnapshots"), showSnapshots},
+        {QStringLiteral("showOldBeta"), showOldBeta},
+        {QStringLiteral("showOldAlpha"), showOldAlpha},
         {QStringLiteral("modrinthUserAgent"), modrinthUserAgent},
         {QStringLiteral("githubRepository"), githubRepository},
         {QStringLiteral("autoCheckForUpdates"), autoCheckForUpdates},
@@ -50,6 +52,8 @@ LauncherSettings LauncherSettings::fromJson(const QJsonObject &object)
     settings.closeToTray = object.value(QStringLiteral("closeToTray")).toBool(settings.closeToTray);
     settings.enableAnimations = object.value(QStringLiteral("enableAnimations")).toBool(settings.enableAnimations);
     settings.showSnapshots = object.value(QStringLiteral("showSnapshots")).toBool(settings.showSnapshots);
+    settings.showOldBeta = object.value(QStringLiteral("showOldBeta")).toBool(settings.showOldBeta);
+    settings.showOldAlpha = object.value(QStringLiteral("showOldAlpha")).toBool(settings.showOldAlpha);
     settings.modrinthUserAgent = object.value(QStringLiteral("modrinthUserAgent")).toString(settings.modrinthUserAgent);
     settings.githubRepository = object.value(QStringLiteral("githubRepository")).toString(settings.githubRepository).trimmed();
     settings.autoCheckForUpdates = object.value(QStringLiteral("autoCheckForUpdates")).toBool(settings.autoCheckForUpdates);

@@ -22,6 +22,8 @@ struct LauncherSettings
     bool closeToTray = false;
     bool enableAnimations = true;
     bool showSnapshots = false;
+    bool showOldBeta = false;
+    bool showOldAlpha = false;
     QString modrinthUserAgent = QStringLiteral("AtlasLauncher/0.1.0 (personal launcher)");
     QString githubRepository = QStringLiteral("kutsandriy14-cyber/atlas-launcher-releases");
     bool autoCheckForUpdates = true;

@@ -210,6 +210,8 @@ private:
     QSpinBox *m_inactivityTimeout = nullptr;
     QCheckBox *m_verifyHashes = nullptr;
     QCheckBox *m_showSnapshots = nullptr;
+    QCheckBox *m_showOldBeta = nullptr;
+    QCheckBox *m_showOldAlpha = nullptr;
     QCheckBox *m_enableAnimations = nullptr;
     QPushButton *m_launchButton = nullptr;
     QVector<QPushButton *> m_navButtons;

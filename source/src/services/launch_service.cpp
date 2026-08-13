@@ -86,6 +86,36 @@ QString safePathSegment(const QString &value)
     return safe.isEmpty() ? QStringLiteral("default") : safe;
 }
 
+QString mavenPath(const QString &coordinate)
+{
+    const QStringList parts = coordinate.split(QLatin1Char(':'));
+    if (parts.size() < 3) return {};
+    QString group = parts.at(0);
+    group.replace(QLatin1Char('.'), QLatin1Char('/'));
+    const QString artifact = parts.at(1);
+    QString version = parts.at(2);
+    QString classifier;
+    QString extension = QStringLiteral("jar");
+    const int at = version.indexOf(QLatin1Char('@'));
+    if (at >= 0) {
+        extension = version.mid(at + 1);
+        version = version.left(at);
+    }
+    if (parts.size() >= 4) classifier = parts.at(3);
+    if (group.isEmpty() || artifact.isEmpty() || version.isEmpty() || extension.isEmpty()) return {};
+    QString fileName = artifact + QLatin1Char('-') + version;
+    if (!classifier.isEmpty()) fileName += QLatin1Char('-') + classifier;
+    fileName += QLatin1Char('.') + extension;
+    return group + QLatin1Char('/') + artifact + QLatin1Char('/') + version + QLatin1Char('/') + fileName;
+}
+
+QString libraryRelativePath(const QJsonObject &library)
+{
+    const QString artifactPath = library.value(QStringLiteral("downloads")).toObject()
+        .value(QStringLiteral("artifact")).toObject().value(QStringLiteral("path")).toString();
+    return artifactPath.isEmpty() ? mavenPath(library.value(QStringLiteral("name")).toString()) : artifactPath;
+}
+
 QJsonArray mergedLibraries(const QJsonArray &baseLibraries, const QJsonArray &profileLibraries)
 {
     QJsonArray result;
@@ -359,8 +389,7 @@ QStringList LaunchService::classpathFor(const QJsonObject &metadata, QString *er
     for (const QJsonValue &value : metadata.value(QStringLiteral("libraries")).toArray()) {
         const QJsonObject library = value.toObject();
         if (!libraryAllowedOnWindows(library)) continue;
-        const QJsonObject artifact = library.value(QStringLiteral("downloads")).toObject().value(QStringLiteral("artifact")).toObject();
-        const QString relative = artifact.value(QStringLiteral("path")).toString();
+        const QString relative = libraryRelativePath(library);
         if (relative.isEmpty()) continue;
         const QString path = QDir(gameDirectory()).filePath(QStringLiteral("libraries/%1").arg(relative));
         if (!QFileInfo(path).isFile()) {
@@ -410,6 +439,10 @@ QStringList LaunchService::argumentsFor(const LaunchOptions &options, const QJso
         {QStringLiteral("${game_directory}"), QDir::toNativeSeparators(options.instance.rootPath)},
         {QStringLiteral("${assets_root}"), QDir::toNativeSeparators(QDir(gameDirectory()).filePath(QStringLiteral("assets")))},
         {QStringLiteral("${assets_index_name}"), assetIndex},
+        {QStringLiteral("${path}"), QDir::toNativeSeparators(QDir(gameDirectory()).filePath(
+            QStringLiteral("assets/log_configs/%1").arg(metadata.value(QStringLiteral("logging")).toObject()
+                .value(QStringLiteral("client")).toObject().value(QStringLiteral("file")).toObject()
+                .value(QStringLiteral("id")).toString())))},
         {QStringLiteral("${auth_uuid}"), compactUuid},
         {QStringLiteral("${auth_access_token}"), options.account.accessToken},
         {QStringLiteral("${clientid}"), options.account.clientId},
@@ -478,7 +511,9 @@ QString LaunchService::nativeArchiveFor(const QJsonObject &library) const
     classifier.replace(QStringLiteral("${arch}"), QStringLiteral("64"));
     if (classifier.isEmpty()) return {};
     const QJsonObject file = downloads.value(QStringLiteral("classifiers")).toObject().value(classifier).toObject();
-    const QString relative = file.value(QStringLiteral("path")).toString();
+    const QString relative = file.value(QStringLiteral("path")).toString().isEmpty()
+        ? mavenPath(library.value(QStringLiteral("name")).toString() + QLatin1Char(':') + classifier)
+        : file.value(QStringLiteral("path")).toString();
     return relative.isEmpty() ? QString() : QDir(gameDirectory()).filePath(QStringLiteral("libraries/%1").arg(relative));
 }
 

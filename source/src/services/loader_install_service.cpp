@@ -60,6 +60,53 @@ QJsonArray mergedArguments(const QJsonArray &base, const QJsonArray &overlay)
     return result;
 }
 
+struct MinecraftReleaseVersion {
+    int minor = -1;
+    int patch = -1;
+
+    bool isValid() const { return minor >= 0 && patch >= 0; }
+};
+
+MinecraftReleaseVersion parseMinecraftReleaseVersion(const QString &version)
+{
+    // Только обычные release-пути формата 1.x[.y]. Снапшоты, Beta и Alpha
+    // намеренно не проходят: для них официальный API этих loaders не обещает
+    // совместимый профиль.
+    static const QRegularExpression pattern(QStringLiteral("^1\\.(\\d+)(?:\\.(\\d+))?(?:[-+].*)?$"));
+    const QRegularExpressionMatch match = pattern.match(version.trimmed());
+    if (!match.hasMatch()) return {};
+    return {match.captured(1).toInt(), match.captured(2).isEmpty() ? 0 : match.captured(2).toInt()};
+}
+
+bool isAtLeast(const MinecraftReleaseVersion &version, int minor, int patch = 0)
+{
+    return version.minor > minor || (version.minor == minor && version.patch >= patch);
+}
+
+bool isAtMost(const MinecraftReleaseVersion &version, int minor, int patch = 0)
+{
+    return version.minor < minor || (version.minor == minor && version.patch <= patch);
+}
+
+bool loaderSupportsMinecraftVersion(LoaderKind kind, const QString &minecraftVersion)
+{
+    const MinecraftReleaseVersion version = parseMinecraftReleaseVersion(minecraftVersion);
+    if (!version.isValid()) return false;
+    switch (kind) {
+    case LoaderKind::Forge:
+        return isAtLeast(version, 1, 0);
+    case LoaderKind::Fabric:
+    case LoaderKind::Quilt:
+        return isAtLeast(version, 14, 0);
+    case LoaderKind::LegacyFabric:
+        return isAtLeast(version, 0, 0) && isAtMost(version, 13, 2);
+    case LoaderKind::NeoForge:
+        return isAtLeast(version, 20, 2);
+    default:
+        return false;
+    }
+}
+
 bool ensureLauncherProfilesFile(const QString &gameDirectory, QString *error)
 {
     const QString path = QDir(gameDirectory).filePath(QStringLiteral("launcher_profiles.json"));
@@ -108,11 +155,16 @@ LoaderInstallService::LoaderInstallService(const QString &dataDirectory,
 void LoaderInstallService::refreshVersions(LoaderKind kind, const QString &minecraftVersion)
 {
     if (!supports(kind)) {
-        emit versionsError(kind, minecraftVersion, QStringLiteral("Atlas пока получает launcher profiles только для Fabric и Quilt."));
+        emit versionsError(kind, minecraftVersion, QStringLiteral("Выбранный загрузчик не поддерживается Atlas."));
         return;
     }
     if (minecraftVersion.trimmed().isEmpty()) {
         emit versionsError(kind, minecraftVersion, QStringLiteral("Не выбрана версия Minecraft."));
+        return;
+    }
+    if (!supportsMinecraftVersion(kind, minecraftVersion)) {
+        emit versionsError(kind, minecraftVersion, QStringLiteral("%1 не поддерживает Minecraft %2.")
+                           .arg(loaderKindToString(kind), minecraftVersion));
         return;
     }
     requestJson(QUrl(loaderVersionsUrl(kind, minecraftVersion)), RequestPurpose::VersionList, kind, minecraftVersion);
@@ -129,8 +181,13 @@ void LoaderInstallService::install(const Instance &instance, const QString &java
         return;
     }
     if (!supports(instance.loader.kind)) {
-        emit installError(instance.id, QStringLiteral("Для %1 пока нет безопасной нативной установки Atlas. Поддерживаются Fabric, Quilt, Forge и NeoForge.")
+        emit installError(instance.id, QStringLiteral("Для %1 пока нет безопасной нативной установки Atlas. Поддерживаются Fabric, Legacy Fabric, Quilt, Forge и NeoForge.")
                           .arg(loaderKindToString(instance.loader.kind)));
+        return;
+    }
+    if (!supportsMinecraftVersion(instance.loader.kind, instance.minecraftVersion)) {
+        emit installError(instance.id, QStringLiteral("%1 не поддерживает Minecraft %2. Выберите только показанный совместимый загрузчик.")
+                          .arg(loaderKindToString(instance.loader.kind), instance.minecraftVersion));
         return;
     }
     if (instance.id.isEmpty() || instance.minecraftVersion.isEmpty()) {
@@ -176,6 +233,11 @@ void LoaderInstallService::install(const Instance &instance, const QString &java
 bool LoaderInstallService::isInstalling() const
 {
     return !m_job.instance.id.isEmpty() && !m_job.failed;
+}
+
+bool LoaderInstallService::supportsMinecraftVersion(LoaderKind kind, const QString &minecraftVersion) const
+{
+    return supports(kind) && loaderSupportsMinecraftVersion(kind, minecraftVersion);
 }
 
 bool LoaderInstallService::supports(LoaderKind kind) const

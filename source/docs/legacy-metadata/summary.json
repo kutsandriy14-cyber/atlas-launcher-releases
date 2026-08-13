@@ -1,0 +1,66 @@
+[
+  {
+    "id": "1.7.10",
+    "manifest_type": "release",
+    "metadata_type": "release",
+    "inheritsFrom": null,
+    "has_client_download": true,
+    "has_asset_index": true,
+    "asset_index_id": "1.7.10",
+    "libraries": 33,
+    "mainClass": "net.minecraft.client.main.Main",
+    "minimumLauncherVersion": 13,
+    "javaVersion": {
+      "component": "jre-legacy",
+      "majorVersion": 8
+    }
+  },
+  {
+    "id": "1.7.4",
+    "manifest_type": "release",
+    "metadata_type": "release",
+    "inheritsFrom": null,
+    "has_client_download": true,
+    "has_asset_index": true,
+    "asset_index_id": "1.7.4",
+    "libraries": 27,
+    "mainClass": "net.minecraft.client.main.Main",
+    "minimumLauncherVersion": 13,
+    "javaVersion": {
+      "component": "jre-legacy",
+      "majorVersion": 8
+    }
+  },
+  {
+    "id": "b1.7.3",
+    "manifest_type": "old_beta",
+    "metadata_type": "old_beta",
+    "inheritsFrom": null,
+    "has_client_download": true,
+    "has_asset_index": true,
+    "asset_index_id": "pre-1.6",
+    "libraries": 13,
+    "mainClass": "net.minecraft.launchwrapper.Launch",
+    "minimumLauncherVersion": 7,
+    "javaVersion": {
+      "component": "jre-legacy",
+      "majorVersion": 8
+    }
+  },
+  {
+    "id": "a1.2.6",
+    "manifest_type": "old_alpha",
+    "metadata_type": "old_alpha",
+    "inheritsFrom": null,
+    "has_client_download": true,
+    "has_asset_index": true,
+    "asset_index_id": "pre-1.6",
+    "libraries": 13,
+    "mainClass": "net.minecraft.launchwrapper.Launch",
+    "minimumLauncherVersion": 7,
+    "javaVersion": {
+      "component": "jre-legacy",
+      "majorVersion": 8
+    }
+  }
+]

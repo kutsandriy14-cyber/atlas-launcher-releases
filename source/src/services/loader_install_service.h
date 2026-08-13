@@ -33,6 +33,7 @@ public:
     void refreshVersions(LoaderKind kind, const QString &minecraftVersion);
     void install(const Instance &instance, const QString &javaExecutable = QString());
     bool isInstalling() const;
+    bool supportsMinecraftVersion(LoaderKind kind, const QString &minecraftVersion) const;
 
 signals:
     void versionsReady(atlas::LoaderKind kind, const QString &minecraftVersion,

@@ -1,6 +1,8 @@
 #include "services/download_manager.h"
 #include "services/minecraft_install_service.h"
 
+#include <algorithm>
+
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -33,9 +35,10 @@ public:
 
         m_timeout.start(45000);
         // This is the exact path used when a user opens the editor while the
-        // main-window request is still in flight and presses "Обновить".
-        m_service.refreshVersions(false);
-        QTimer::singleShot(0, this, [this]() { m_service.refreshVersions(false); });
+        // main-window request is still in flight and presses "Обновить". It also
+        // verifies all explicit Mojang categories Atlas can expose in the UI.
+        m_service.refreshVersions(true, true, true);
+        QTimer::singleShot(0, this, [this]() { m_service.refreshVersions(true, true, true); });
     }
 
     int exitCode() const { return m_exitCode; }
@@ -44,14 +47,25 @@ private slots:
     void onVersionsReady(const QVector<atlas::MinecraftVersionDescriptor> &versions)
     {
         if (m_finished) return;
-        m_finished = true;
-        m_timeout.stop();
         if (versions.isEmpty() || !versions.first().isValid()) {
             fail(QStringLiteral("Mojang returned no valid official versions after refresh."));
             return;
         }
+        const auto hasType = [&versions](const QString &type) {
+            return std::any_of(versions.cbegin(), versions.cend(), [&type](const atlas::MinecraftVersionDescriptor &version) {
+                return version.type == type;
+            });
+        };
+        if (!hasType(QStringLiteral("release")) || !hasType(QStringLiteral("snapshot"))
+            || !hasType(QStringLiteral("old_beta")) || !hasType(QStringLiteral("old_alpha"))) {
+            fail(QStringLiteral("Manifest categories Release, Snapshot, Beta and Alpha were not all returned."));
+            return;
+        }
+        m_finished = true;
+        m_timeout.stop();
         QTextStream(stdout) << "MinecraftVersionsRefreshProbe OK: " << versions.size()
-                            << " official versions; latest=" << versions.first().id << "\n";
+                            << " official versions across Release, Snapshot, Beta and Alpha; latest="
+                            << versions.first().id << "\n";
         m_exitCode = 0;
         QCoreApplication::quit();
     }
